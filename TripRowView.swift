@@ -5,13 +5,14 @@ import SwiftUI
 struct TripRowView: View {
     let trip: Trip
     @EnvironmentObject var app: AppState
+    @EnvironmentObject var extensions: TripExtensionRegistry
     @State private var summary: String = "Fetching…"
 
     /// True if the trip is today or in the future
     private var isTodayOrFuture: Bool {
         let today = Calendar.current.startOfDay(for: Date())
         return Calendar.current.startOfDay(for: trip.date) >= today
-    } // isTodayOrFuture
+    }
 
     /// Main body of the table row
     var body: some View {
@@ -33,6 +34,14 @@ struct TripRowView: View {
 
             Text(summary)
                 .font(.footnote)
+
+            // Extension hook: row footer
+            ForEach(
+                extensions.renderItems(for: trip, hook: .tripRowFooter),
+                id: \.id
+            ) { item in
+                item.view
+            }
         }
         .task {
             guard isTodayOrFuture else {
@@ -47,7 +56,7 @@ struct TripRowView: View {
                 await fetch()
             }
         }
-    } // body
+    }
 
     /// Fetch weather and update summary text (only called for future/today trips)
     private func fetch() async {
