@@ -1,29 +1,70 @@
-//
-//  GeocoderService.swift
-//  MyTrip Planner
-//
-//  Created by Lorne Cooper on 11/6/25.
-//
+// Copyright H2so4 Consulting LLC 2025
+// File: Services/GeocoderService.swift
 
-
-// Copyright 2025 H2so4 Consulting LLC
 import Foundation
+import CoreLocation
+import MapKit
 
-/// OpenWeather direct geocoding service
-enum GeocoderService {
-    /// Resolve "City" → (lat, lon) using OWM /geo/1.0/direct
-    static func geocode(city: String) async throws -> (Double, Double) {
-        let key = ConfigService.openWeatherAPIKey()
-        guard !key.isEmpty else { throw AppError.missingAPIKey } // geocode
+/// Errors for geocoding operations (MapKit-based).
+/// end enum GeocoderError
+enum GeocoderError: Error, LocalizedError {
+    case invalidQuery
+    case notFound
+    case underlying(Error)
+    var errorDescription: String? {
+        switch self {
+        case .invalidQuery: "Invalid or empty location query."
+        case .notFound: "No matching location was found."
+        case .underlying(let e): e.localizedDescription
+        }
+    } // end var errorDescription
+} // end enum GeocoderError
 
-        let enc = city.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? city
-        let urlStr = "https://api.openweathermap.org/geo/1.0/direct?q=\(enc)&limit=1&appid=\(key)"
-        guard let url = URL(string: urlStr) else { throw AppError.badURL(urlStr) } // geocode
+/// Forward geocoding using MapKit search (non-deprecated).
+/// end final class GeocoderService
+@MainActor
+final class GeocoderService {
+    static let shared = GeocoderService()
+    private var currentSearch: MKLocalSearch?
+    private let cache = NSCache<NSString, NSValue>() // NSValue(mkCoordinate:)
+    private init() { cache.countLimit = 256 } // end init
 
-        let (data, _) = try await HTTPClient.get(url, tag: "OWM.GEOCODE")
-        struct Direct: Codable { let lat: Double; let lon: Double } // Direct
-        let arr = try JSONDecoder().decode([Direct].self, from: data)
-        guard let first = arr.first else { throw AppError.noResults("geocode") } // geocode
-        return (first.lat, first.lon)
-    } // geocode
-} // GeocoderService
+    /// Geocode a place/city string.
+    /// end func geocode(city:)
+    func geocode(city raw: String) async throws -> CLLocationCoordinate2D {
+        let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { throw GeocoderError.invalidQuery }
+        if let v = cache.object(forKey: NSString(string: query.lowercased())) {
+            return v.mkCoordinateValue
+        }
+        currentSearch?.cancel(); currentSearch = nil
+
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = query
+        let search = MKLocalSearch(request: req)
+        currentSearch = search
+        let resp: MKLocalSearch.Response
+        do { resp = try await search.start() }
+        catch { currentSearch = nil; throw GeocoderError.underlying(error) }
+        currentSearch = nil
+
+        guard let item = resp.mapItems.first else { throw GeocoderError.notFound }
+        let coord = item.location.coordinate
+        cache.setObject(NSValue(mkCoordinate: coord), forKey: NSString(string: query.lowercased()))
+        return coord
+    } // end func geocode(city:)
+
+    /// Prefer numeric coords; otherwise prefer **customName** if user-edited, then city, then locationName.
+    /// end func geocode(for:)
+    func geocode(for trip: Trip) async throws -> CLLocationCoordinate2D {
+        if let c = trip.coordinate { return c }
+        if let cn = trip.customName?.trimmingCharacters(in: .whitespacesAndNewlines), !cn.isEmpty {
+            return try await geocode(city: cn)
+        }
+        if let ct = trip.city?.trimmingCharacters(in: .whitespacesAndNewlines), !ct.isEmpty {
+            return try await geocode(city: ct)
+        }
+        return try await geocode(city: trip.locationName)
+    } // end func geocode(for:)
+} // end final class GeocoderService
+

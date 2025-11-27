@@ -1,131 +1,100 @@
-// Copyright 2025 H2so4 Consulting LLC
+// Copyright H2so4 Consulting LLC 2025
+// File: View/MapPickerSheet.swift
+
 import SwiftUI
 import MapKit
 import CoreLocation
 
-/// Map picker that uses the map center as the selected coordinate (iOS 16/17+ compatible)
+/// Crosshair-centered picker: move the map; the **center** is your selection.
+/// We track the center via `.onMapCameraChange` to avoid snapshot conversions.
+/// end struct MapPickerSheet
 struct MapPickerSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var latitude: Double?
-    @Binding var longitude: Double?
 
-    // iOS 17+: MapCameraPosition; iOS 16: MKCoordinateRegion fallback
-    @State private var position: MapCameraPosition = .automatic
-    @State private var currentCenter: CLLocationCoordinate2D?
-    @State private var legacyRegion = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 35.6804, longitude: 139.7690),
-        span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
-    )
+    // MARK: - Inputs
+
+    var initial: CLLocationCoordinate2D?
+    var onPick: (CLLocationCoordinate2D, String) -> Void
+
+    // MARK: - State
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var camera: MapCameraPosition = .automatic
+    @State private var centerCoord: CLLocationCoordinate2D? = nil
+    @State private var pendingName: String = "Unknown location"
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 8) {
-                if #available(iOS 17.0, *) {
-                    Map(position: $position)
-                        .mapControls {
-                            MapUserLocationButton()
-                            MapCompass()
-                            MapPitchToggle()
-                            MapScaleView()
+            ZStack {
+                Map(position: $camera)
+                    .onAppear {
+                        if let c = initial {
+                            camera = .region(MKCoordinateRegion(center: c, span: .init(latitudeDelta: 0.12, longitudeDelta: 0.12)))
+                            centerCoord = c
+                            Task { await updatePreviewName(c) }
                         }
-                        .onMapCameraChange(frequency: .continuous) { ctx in
-                            currentCenter = ctx.region.center
-                        }
-                        .overlay {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.tint)
-                                .shadow(radius: 2)
-                        }
-                        .overlay(alignment: .bottom) {
-                            Text(centerText17())
-                                .font(.footnote.monospaced())
-                                .padding(8)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                                .padding(.bottom, 12)
-                        }
-                        .onAppear { configureInitialCamera() }
-                } else {
-                    Map(coordinateRegion: $legacyRegion, interactionModes: [.all], showsUserLocation: true)
-                        .mapControls {
-                            MapUserLocationButton()
-                            MapCompass()
-                            MapPitchToggle()
-                            MapScaleView()
-                        }
-                        .overlay {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.tint)
-                                .shadow(radius: 2)
-                        }
-                        .overlay(alignment: .bottom) {
-                            Text(String(format: "Center  %.5f, %.5f", legacyRegion.center.latitude, legacyRegion.center.longitude))
-                                .font(.footnote.monospaced())
-                                .padding(8)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                                .padding(.bottom, 12)
-                        }
-                        .onAppear {
-                            if let la = latitude, let lo = longitude {
-                                legacyRegion.center = .init(latitude: la, longitude: lo)
-                                legacyRegion.span = .init(latitudeDelta: 0.2, longitudeDelta: 0.2)
-                            }
-                        }
-                }
+                    } // end .onAppear
+                    .onMapCameraChange { ctx in
+                        // Keep center coordinate up to date as user pans/zooms.
+                        centerCoord = ctx.region.center
+                    } // end .onMapCameraChange
 
-                HStack {
-                    Button("Cancel") { dismiss() }
+                CrosshairView()
+                    .frame(width: 40, height: 40)
+                    .allowsHitTesting(false)
+
+                VStack {
                     Spacer()
-                    Button("Set Location") {
-                        useCenter()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(.horizontal)
-                .padding(.bottom)
-            } // VStack
+                    Text(pendingName)
+                        .font(.footnote)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(.bottom, 16)
+                        .allowsHitTesting(false)
+                } // end VStack
+            } // end ZStack
             .navigationTitle("Pick Location")
-            .navigationBarTitleDisplayMode(.inline)
-        } // NavigationStack
-    } // body
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                } // end ToolbarItem
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Use") {
+                        guard let coord = centerCoord else { return }
+                        Task {
+                            let finalName = (try? await ReverseGeocoderService.shared.nearestPlaceName(near: coord)) ?? pendingName
+                            onPick(coord, finalName)
+                            dismiss()
+                        }
+                    }
+                } // end ToolbarItem
+            } // end .toolbar
+        } // end NavigationStack
+    } // end var body
 
-    /// Apply initial camera/region from existing bindings (iOS 17+)
-    private func configureInitialCamera() {
-        if let la = latitude, let lo = longitude {
-            let c = CLLocationCoordinate2D(latitude: la, longitude: lo)
-            currentCenter = c
-            position = .region(.init(center: c, span: .init(latitudeDelta: 0.2, longitudeDelta: 0.2)))
-        } else {
-            let c = CLLocationCoordinate2D(latitude: 35.6804, longitude: 139.7690)
-            currentCenter = c
-            position = .region(.init(center: c, span: .init(latitudeDelta: 2.0, longitudeDelta: 2.0)))
-        }
-    } // configureInitialCamera
+    // MARK: - Helpers
 
-    /// Commit the current center to bindings and dismiss
-    private func useCenter() {
-        if #available(iOS 17.0, *) {
-            guard let c = currentCenter else { dlog("MAP", "No center available (iOS17)"); return }
-            latitude = c.latitude
-            longitude = c.longitude
-            dlog("MAP", "Picked center \(c.latitude), \(c.longitude)")
-            dismiss()
+    private func updatePreviewName(_ coord: CLLocationCoordinate2D) async {
+        if let name = try? await ReverseGeocoderService.shared.nearestPlaceName(near: coord) {
+            pendingName = name
         } else {
-            latitude = legacyRegion.center.latitude
-            longitude = legacyRegion.center.longitude
-            dlog("MAP", "Picked center \(legacyRegion.center.latitude), \(legacyRegion.center.longitude)")
-            dismiss()
+            pendingName = "Unknown location"
         }
-    } // useCenter
+    } // end func updatePreviewName(_:)
+} // end struct MapPickerSheet
 
-    /// Bottom overlay text (iOS 17+)
-    private func centerText17() -> String {
-        if let c = currentCenter {
-            return String(format: "Center  %.5f, %.5f", c.latitude, c.longitude)
-        } else {
-            return "Pan/zoom to position the crosshair"
-        }
-    } // centerText17
-} // MapPickerSheet
+/// Simple crosshair drawing.
+/// end struct CrosshairView
+private struct CrosshairView: View {
+    var body: some View {
+        ZStack {
+            Rectangle().frame(width: 24, height: 1).foregroundStyle(.primary.opacity(0.8))
+            Rectangle().frame(width: 1, height: 24).foregroundStyle(.primary.opacity(0.8))
+            Circle().frame(width: 4, height: 4).foregroundStyle(.red)
+        } // end ZStack
+        .accessibilityHidden(true)
+    } // end var body
+} // end struct CrosshairView
 

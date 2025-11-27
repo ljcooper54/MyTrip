@@ -1,169 +1,73 @@
-// Copyright 2025 H2so4 Consulting LLC
+// Copyright H2so4 Consulting LLC 2025
+// File: View/TripFormView.swift
+
 import SwiftUI
-import Foundation
 
-/// Trip editor with live onChange weather and auto reverse-geocode
+/// Add-trip form aligned with the current `Trip` initializer (no notes).
+/// end struct TripFormView
 struct TripFormView: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject var app: AppState
-    @EnvironmentObject var store: TripStore
-    @State var trip: Trip
-    let onSave: (Trip) -> Void
 
+    // MARK: - Inputs
+
+    var onSave: (Trip) -> Void
+
+    // MARK: - Environment
+
+    @Environment(\.dismiss) private var dismiss
+
+    // MARK: - State
+
+    @State private var locationName: String = ""
     @State private var city: String = ""
     @State private var date: Date = Date()
-    @State private var lat: Double?
-    @State private var lon: Double?
-    @State private var status: String = ""
-    @State private var showMap = false
-    @State private var fetchTask: Task<Void, Never>?
+
+    // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            Form {
-                destinationSection
-                coordinatesSection
-                if !status.isEmpty { weatherSection }
-            }
-            .navigationTitle("Trip")
-            .sheet(isPresented: $showMap) { MapPickerSheet(latitude: $lat, longitude: $lon) }
-            .toolbar { toolbarContent }
-            .onAppear(perform: onAppear)
-            .onChangeCompat(of: city) { _ in triggerFetch() }
-            .onChangeCompat(of: date) { _ in triggerFetch() }
-            .onChangeCompat(of: lat)  { _ in handleCoordChange() }
-            .onChangeCompat(of: lon)  { _ in handleCoordChange() }
+        Form {
+            Section("Where") {
+                TextField("Location name (required)", text: $locationName)
+                TextField("City (optional)", text: $city)
+            } // end Section(Where)
 
-        } // NavigationStack
-    } // body
-
-    // MARK: - Sections
-
-    private var destinationSection: some View {
-        Section("Destination") {
-            TextField("City", text: $city)
-                .textInputAutocapitalization(.words)
-                .autocorrectionDisabled()
-            DatePicker("Date", selection: $date, displayedComponents: .date)
-        }
-    } // destinationSection
-
-    private var coordinatesSection: some View {
-        Section("Coordinates") {
-            HStack {
-                Text(coordLabel())
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Set Location", action: setLocationTapped)
-            }
-            if lat != nil || lon != nil {
-                Button("Clear Coordinates") { lat = nil; lon = nil }
-                    .foregroundStyle(.red)
-            }
-        }
-    } // coordinatesSection
-
-    private var weatherSection: some View {
-        Section("Weather") { Text(status).font(.callout) }
-    } // weatherSection
-
-    // MARK: - Toolbar
-
-    private var toolbarContent: some ToolbarContent {
-        Group {
+            Section("When") {
+                DatePicker("Date", selection: $date, displayedComponents: .date)
+            } // end Section(When)
+        } // end Form
+        .navigationTitle("New Stop")
+        .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
-            }
+            } // end ToolbarItem
+
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save", action: saveTapped)
-                    .disabled(isSaveDisabled())
-            }
-        }
-    } // toolbarContent
+                Button("Save") { save() }
+                    .disabled(locationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } // end ToolbarItem
+        } // end .toolbar
+    } // end var body
 
     // MARK: - Actions
 
-    private func onAppear() {
-        city = trip.city
-        date = trip.date
-        lat = trip.latitude
-        lon = trip.longitude
-        triggerFetch()
-    } // onAppear
+    /// Builds a `Trip` using current form values and calls `onSave`.
+    /// end func save()
+    private func save() {
+        let trimmedLocation = locationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCity = city.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTrip = Trip(
+            locationName: trimmedLocation,
+            date: date,
+            customName: nil,
+            isNameUserEdited: false,
+            city: trimmedCity.isEmpty ? nil : trimmedCity,
+            latitude: nil,
+            longitude: nil,
+            images: []
+        ) // end Trip init
 
-    private func setLocationTapped() {
-        if lat == nil || lon == nil {
-            if let (la, lo) = store.lastCoordinate() {
-                lat = la; lon = lo
-            } else {
-                // West Concord, MA, USA (approx)
-                lat = 42.4593; lon = -71.4006
-            }
-        }
-        showMap = true
-    } // setLocationTapped
-
-    private func saveTapped() {
-        var t = trip
-        t.city = city.trimmingCharacters(in: .whitespacesAndNewlines)
-        t.date = date
-        t.latitude = lat
-        t.longitude = lon
-        onSave(t)
+        onSave(newTrip)
         dismiss()
-    } // saveTapped
-
-    private func handleCoordChange() {
-        Task {
-            await updateCityFromCoordsIfEmpty()
-            triggerFetch()
-        }
-    } // handleCoordChange
-
-    // MARK: - Helpers
-
-    private func isSaveDisabled() -> Bool {
-        let hasCity = !city.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasCoords = (lat != nil && lon != nil)
-        return !(hasCity || hasCoords)
-    } // isSaveDisabled
-
-    private func coordLabel() -> String {
-        if let la = lat, let lo = lon {
-            return String(format: "Lat %.5f  Lon %.5f", la, lo)
-        }
-        return "No location selected"
-    } // coordLabel
-
-    /// Launch/cancel a live fetch; sets "No Weather @ Loc" on failure
-    private func triggerFetch() {
-        fetchTask?.cancel()
-        fetchTask = Task { @MainActor in
-            let cleaned = city.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty || (lat != nil && lon != nil) else { status = ""; return }
-            var t = trip; t.city = cleaned; t.date = date; t.latitude = lat; t.longitude = lon
-            do {
-                let (hi, lo, rain) = try await WeatherService.fetchDay(for: t)
-                let hiS = Units.tempStringC(hi, isF: app.isFahrenheit)
-                let loS = Units.tempStringC(lo, isF: app.isFahrenheit)
-                status = "Hi \(hiS) · Lo \(loS) · Rain \(rain.map { "\($0)%" } ?? "—")"
-            } catch {
-                dlog("UI", "Live fetch ERR \(error)")
-                status = "No Weather @ Loc"
-            }
-        }
-    } // triggerFetch
-
-    /// If city is blank and coords exist, reverse-geocode to fill the city
-    private func updateCityFromCoordsIfEmpty() async {
-        let cleaned = city.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cleaned.isEmpty, let la = lat, let lo = lon else { return } // updateCityFromCoordsIfEmpty
-        if let name = await ReverseGeocoderService.name(lat: la, lon: lo) {
-            await MainActor.run { city = name }
-            dlog("MAP", "Reverse geocoded city: \(name)")
-        }
-    } // updateCityFromCoordsIfEmpty
-} // TripFormView
+    } // end func save()
+} // end struct TripFormView
 
 

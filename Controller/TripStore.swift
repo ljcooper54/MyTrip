@@ -9,6 +9,7 @@
 // Copyright 2025 H2so4 Consulting LLC
 import Foundation
 import Combine
+import CoreLocation
 
 /// Simple persistence for trips using UserDefaults
 final class TripStore: ObservableObject {
@@ -34,11 +35,13 @@ final class TripStore: ObservableObject {
     } // saveTrips
     /// Most recently saved coordinate across trips (if any)
     ///
-    func lastCoordinate() -> (Double, Double)? {
-        for t in trips.reversed() {
-            if let la = t.latitude, let lo = t.longitude { return (la, lo) }
+    /// Returns the most recent trip's coordinate if available.
+    func lastCoordinate() -> CLLocationCoordinate2D? {
+        for trip in trips.reversed() {
+            if let coord = trip.coordinate { return coord }
         }
         return nil
+    
     } // lastCoordinate
 } // TripStore
 
