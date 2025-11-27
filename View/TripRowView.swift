@@ -1,65 +1,93 @@
-// Copyright 2025 H2so4 Consulting LLC
+// ============================================================================
+// Copyright H2so4 Consulting LLC 2025
+// File: View/TripRowView.swift
+// ============================================================================
+
 import SwiftUI
+import UIKit
 
-/// One row displaying city/date and fetched weather summary for table mode
+/// Compact row for lists/tables; shows a small thumbnail, display name, and date.
+/// Handles optional local fileURL and remoteURL without force-unwrapping.
+/// end struct TripRowView
 struct TripRowView: View {
+
+    // MARK: - Inputs
+
     let trip: Trip
-    @EnvironmentObject var app: AppState
-    @State private var summary: String = "Fetching…"
 
-    /// True if the trip is today or in the future
-    private var isTodayOrFuture: Bool {
-        let today = Calendar.current.startOfDay(for: Date())
-        return Calendar.current.startOfDay(for: trip.date) >= today
-    } // isTodayOrFuture
+    // MARK: - Computed
 
-    /// Main body of the table row
+    private var title: String { trip.displayName } // user-sticky naming logic
+
+    // MARK: - Body
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(trip.city.isEmpty ? "Unknown City" : trip.city)
+        HStack(spacing: 12) {
+            thumbnailView
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
                     .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                if let la = trip.latitude, let lo = trip.longitude {
-                    Text(String(format: "·  %.4f, %.4f", la, lo))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Text(trip.date, style: .date)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } // end VStack
+
+            Spacer()
+        } // end HStack
+        .padding(.vertical, 6)
+        .contentShape(Rectangle()) // why: make the whole row tappable in lists
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title), \(formattedDate)")
+    } // end var body
+
+    // MARK: - Pieces
+
+    private var formattedDate: String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f.string(from: trip.date)
+    } // end var formattedDate
+
+    /// Renders the first image: prefers local file; falls back to remote URL; else placeholder.
+    /// end var thumbnailView
+    @ViewBuilder
+    private var thumbnailView: some View {
+        if let first = trip.images.first {
+            if let file = first.fileURL, let ui = ImageStore.shared.loadImage(file) {
+                Image(uiImage: ui).resizable().scaledToFill()
+            } else if let url = first.remoteURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFill()
+                    case .failure(_): placeholder
+                    case .empty: ProgressView()
+                    @unknown default: placeholder
+                    }
                 }
+            } else {
+                placeholder
             }
+        } else {
+            placeholder
+        }
+    } // end var thumbnailView
 
-            Text(DF.med.string(from: trip.date))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(.secondary.opacity(0.15))
+            .overlay(
+                Image(systemName: "photo")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            )
+    } // end var placeholder
+} // end struct TripRowView
 
-            Text(summary)
-                .font(.footnote)
-        }
-        .task {
-            guard isTodayOrFuture else {
-                summary = "Trip date has passed"
-                return
-            }
-            await fetch()
-        }
-        .onChange(of: app.isFahrenheit) { _, _ in
-            Task {
-                guard isTodayOrFuture else { return }
-                await fetch()
-            }
-        }
-    } // body
-
-    /// Fetch weather and update summary text (only called for future/today trips)
-    private func fetch() async {
-        do {
-            let (hi, lo, rain) = try await WeatherService.fetchDay(for: trip)
-            let hiS = Units.tempStringC(hi, isF: app.isFahrenheit)
-            let loS = Units.tempStringC(lo, isF: app.isFahrenheit)
-            summary = "Hi \(hiS)  ·  Lo \(loS)  ·  Rain \(rain.map { "\($0)%" } ?? "—")"
-        } catch {
-            dlog("UI", "TripRow fetch ERR \(error)")
-            summary = "No Weather @ Loc"
-        }
-    } // fetch
-} // TripRowView
 

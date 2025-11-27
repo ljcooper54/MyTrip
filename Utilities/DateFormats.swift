@@ -16,3 +16,13 @@ enum DF {
     /// Medium date for UI
     static let med: DateFormatter = { let df = DateFormatter(); df.dateStyle = .medium; return df }() // med
 } // DF
+
+// =======================================
+// File: Utilities/Date+Helpers.swift
+// =======================================
+
+extension Date {
+    var startOfDayUTC: Date {
+        Calendar.current.startOfDay(for: self)
+    }
+}

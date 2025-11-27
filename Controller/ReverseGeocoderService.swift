@@ -1,30 +1,32 @@
-//
-//  ReverseGeocoderService.swift
-//  MyTrip Planner
-//
-//  Created by Lorne Cooper on 11/6/25.
-//
+// Copyright H2so4 Consulting LLC 2025
+// File: Services/ReverseGeocoderService.swift
 
-
-// Copyright 2025 H2so4 Consulting LLC
 import Foundation
 import CoreLocation
+import MapKit
 
-/// Converts coordinates to a friendly place name (city, region, country)
-enum ReverseGeocoderService {
-    /// Reverse geocode coordinates to "City, State, Country"
-    static func name(lat: Double, lon: Double) async -> String? {
-        let geocoder = CLGeocoder()
-        do {
-            let marks = try await geocoder.reverseGeocodeLocation(.init(latitude: lat, longitude: lon))
-            if let p = marks.first {
-                let parts = [p.locality, p.administrativeArea, p.country].compactMap { $0 }
-                let s = parts.joined(separator: ", ")
-                return s.isEmpty ? nil : s
-            }
-        } catch {
-            dlog("MAP", "ReverseGeocode ERR \(error)")
-        }
-        return nil
-    } // name
-} // ReverseGeocoderService
+/// Reverse label lookup near a coordinate using `MKLocalSearch` (avoids deprecated CLGeocoder).
+/// end final class ReverseGeocoderService
+@MainActor
+final class ReverseGeocoderService {
+    static let shared = ReverseGeocoderService() // singleton
+    private var currentSearch: MKLocalSearch? = nil
+    private init() {} // end init
+
+    /// Returns a human-friendly major place name closest to `coordinate`.
+    /// end func nearestPlaceName(near:)
+    func nearestPlaceName(near coordinate: CLLocationCoordinate2D) async throws -> String {
+        currentSearch?.cancel(); currentSearch = nil
+        let span = MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08) // a bit wider to hit major locales
+        let region = MKCoordinateRegion(center: coordinate, span: span)
+        let req = MKLocalSearch.Request()
+        req.region = region
+        let search = MKLocalSearch(request: req)
+        currentSearch = search
+        let resp = try await search.start()
+        currentSearch = nil
+        if let name = resp.mapItems.first?.name, !name.isEmpty { return name }
+        return "Unknown location"
+    } // end func nearestPlaceName(near:)
+} // end final class ReverseGeocoderService
+
