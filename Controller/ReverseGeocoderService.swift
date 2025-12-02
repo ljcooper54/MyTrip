@@ -10,6 +10,7 @@ import MapKit
 @MainActor
 final class ReverseGeocoderService {
     static let shared = ReverseGeocoderService() // singleton
+    private let geocoder = CLGeocoder()
     private var currentSearch: MKLocalSearch? = nil
     private init() {} // end init
 
@@ -17,6 +18,17 @@ final class ReverseGeocoderService {
     /// end func nearestPlaceName(near:)
     func nearestPlaceName(near coordinate: CLLocationCoordinate2D) async throws -> String {
         currentSearch?.cancel(); currentSearch = nil
+
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        if let placemark = try? await geocoder.reverseGeocodeLocation(location).first {
+            let parts = [placemark.locality, placemark.administrativeArea, placemark.country]
+                .compactMap { part in
+                    guard let trimmed = part?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+                    return trimmed
+                }
+            let joined = parts.joined(separator: ", ")
+            if !joined.isEmpty { return joined }
+        }
 
         let span = MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
         let region = MKCoordinateRegion(center: coordinate, span: span)
