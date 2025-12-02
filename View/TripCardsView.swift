@@ -14,6 +14,9 @@ struct TripCardsView: View {
     /// The index of the currently visible card.
     @State private var selectedIndex: Int = 0
 
+    /// Last date the user interacted with; used as the default for new cards.
+    @State private var lastUsedDate: Date = Date()
+
     /// Index pending deletion (for confirmation alert).
     @State private var pendingDeleteIndex: Int? = nil
 
@@ -23,7 +26,7 @@ struct TripCardsView: View {
                 ZStack {
                     if !trips.isEmpty {
                         TabView(selection: $selectedIndex) {
-                            ForEach(trips.indices, id: \.self) { idx in
+                            ForEach(Array(trips.enumerated()), id: \.element.id) { idx, _ in
                                 TripCardView(
                                     place: Binding(
                                         get: { trips[idx].place },
@@ -100,6 +103,21 @@ struct TripCardsView: View {
                 }
             }
             .frame(height: 380)
+        }
+        .onAppear {
+            if let latest = trips.last?.date ?? trips.map(\.date).max() {
+                lastUsedDate = latest
+            }
+        }
+        .onChange(of: trips) { oldValue, newValue in
+            // Track the most recently edited/added date so new cards inherit it.
+            if let changed = newValue.enumerated().first(where: { idx, trip in
+                idx >= oldValue.count || oldValue[idx].date != trip.date
+            }) {
+                lastUsedDate = changed.element.date
+            } else if let latest = newValue.last?.date ?? newValue.map(\.date).max() {
+                lastUsedDate = latest
+            }
         }
         .alert("Delete this trip?", isPresented: Binding(
             get: { pendingDeleteIndex != nil },

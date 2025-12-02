@@ -47,6 +47,7 @@ struct TripCardView: View {
     @State private var showPhotoPicker = false
     @State private var isSuggesting = false
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var photoError: String? = nil
 
     @State private var todaysWeather: DailyWeather?
     @State private var isLoadingWeather = false
@@ -89,7 +90,7 @@ struct TripCardView: View {
                     showLocationPicker = true
                     onPickLocation()
                 } label: {
-                    Label("Pick Location", systemImage: "mappin.and.ellipse")
+                    Label("Map", systemImage: "mappin.and.ellipse")
                 }
 
                 Button {
@@ -97,7 +98,7 @@ struct TripCardView: View {
                     showPhotoPicker = true
                     onAddPhoto()
                 } label: {
-                    Label("Add Photo", systemImage: "photo")
+                    Label("Photo", systemImage: "photo")
                 }
 
                 Button {
@@ -111,12 +112,12 @@ struct TripCardView: View {
                         ProgressView()
                             .progressViewStyle(.circular)
                     } else {
-                        Label("Suggest Photo", systemImage: "sparkles")
+                        Label("Suggest", systemImage: "sparkles")
                     }
                 }
                 .disabled(isSuggesting)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
 
             Spacer(minLength: 4)
 
@@ -180,6 +181,10 @@ struct TripCardView: View {
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
+        } else if let message = weatherMessage {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         } else if isLoadingWeather {
             HStack {
                 ProgressView()
@@ -200,7 +205,7 @@ struct TripCardView: View {
                 Text("\(lat), \(lon)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            } else {
+            } else if place.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("No location selected")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -312,8 +317,10 @@ struct TripCardView: View {
             let img = try await OpenAIPhotoLinkService().suggestPhoto(for: query)
             images.append(img)
             onSuggestPhoto()
+            photoError = nil
         } catch {
             print("[OpenAI] Suggest photo failed: \(error)")
+            photoError = "We couldn't fetch a suggested photo right now. Please try again."
         }
     } // end func suggestPhotoForCurrentTrip
 
@@ -338,6 +345,7 @@ struct TripCardView: View {
     @MainActor
     private func loadWeatherIfPossible() async {
         isLoadingWeather = true
+        weatherMessage = nil
         defer { isLoadingWeather = false }
 
         // Build a Trip value for WeatherService; it only cares about
@@ -360,8 +368,10 @@ struct TripCardView: View {
             let unit: TemperatureUnit = .f  // Change to .c if you prefer Celsius.
             let forecast = try await svc.forecastForTripDate(for: tempTrip, unit: unit)
             todaysWeather = forecast
+            weatherMessage = forecast == nil ? "No Weather Forecast for Date" : nil
         } catch {
             todaysWeather = nil
+            weatherMessage = "No Weather Forecast for Date"
             print("[Weather] Failed to load forecast: \(error)")
         }
     } // end func loadWeatherIfPossible

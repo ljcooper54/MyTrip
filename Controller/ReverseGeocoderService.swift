@@ -59,8 +59,7 @@ final class ReverseGeocoderService {
         }
 
         return "Unknown location"
-    } // end func nearestPlaceName(near:)
-} // end final class ReverseGeocoderService
+    } // end nearestPlaceName
 
         guard let item = response.mapItems.first else { return "Unknown location" }
 
