@@ -5,7 +5,7 @@ import SwiftUI
 import CoreLocation
 
 /// TripCardsView shows the horizontally swipable deck of trip cards,
-/// with + to add a blank card, red arrows as swipe affordances, and delete + auto-naming support.
+/// with red arrows as swipe affordances and delete + auto-naming support.
 /// TripCardsView
 struct TripCardsView: View {
     /// Binding into the array of trips owned by PlannerView.
@@ -13,6 +13,9 @@ struct TripCardsView: View {
 
     /// The index of the currently visible card.
     @State private var selectedIndex: Int = 0
+
+    /// Last date the user interacted with; used as the default for new cards.
+    @State private var lastUsedDate: Date = Date()
 
     /// Index pending deletion (for confirmation alert).
     @State private var pendingDeleteIndex: Int? = nil
@@ -38,7 +41,7 @@ struct TripCardsView: View {
                 ZStack {
                     if !trips.isEmpty {
                         TabView(selection: $selectedIndex) {
-                            ForEach(trips.indices, id: \.self) { idx in
+                            ForEach(Array(trips.enumerated()), id: \.element.id) { idx, _ in
                                 TripCardView(
                                     place: Binding(
                                         get: { trips[idx].place },
@@ -116,6 +119,21 @@ struct TripCardsView: View {
             }
             .frame(height: 380)
         }
+        .onAppear {
+            if let latest = trips.last?.date ?? trips.map(\.date).max() {
+                lastUsedDate = latest
+            }
+        }
+        .onChange(of: trips) { oldValue, newValue in
+            // Track the most recently edited/added date so new cards inherit it.
+            if let changed = newValue.enumerated().first(where: { idx, trip in
+                idx >= oldValue.count || oldValue[idx].date != trip.date
+            }) {
+                lastUsedDate = changed.element.date
+            } else if let latest = newValue.last?.date ?? newValue.map(\.date).max() {
+                lastUsedDate = latest
+            }
+        }
         .alert("Delete this trip?", isPresented: Binding(
             get: { pendingDeleteIndex != nil },
             set: { newValue in
@@ -166,9 +184,10 @@ struct TripCardsView: View {
 
     /// Adds a new blank trip and selects it.
     private func addBlankTripAndSelect() {
-        let newTrip = Trip.blank()
+        var newTrip = Trip.blank(at: lastUsedDate)
+        newTrip.images.removeAll()
         trips.append(newTrip)
-        selectedIndex = max(0, trips.count - 1)
+        withAnimation { selectedIndex = max(0, trips.count - 1) }
     } // end func addBlankTripAndSelect
 
     /// Deletes a trip at the given index.

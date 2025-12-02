@@ -47,9 +47,12 @@ struct TripCardView: View {
     @State private var showPhotoPicker = false
     @State private var isSuggesting = false
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var photoError: String? = nil
 
     @State private var todaysWeather: DailyWeather?
     @State private var isLoadingWeather = false
+    @State private var weatherMessage: String? = nil
+    @State private var weatherFetchTask: Task<Void, Never>? = nil
 
     /// Used so that tapping Suggest / buttons can end editing cleanly.
     @FocusState private var placeFieldFocused: Bool
@@ -88,7 +91,7 @@ struct TripCardView: View {
                     showLocationPicker = true
                     onPickLocation()
                 } label: {
-                    Label("Pick Location", systemImage: "mappin.and.ellipse")
+                    Label("Map", systemImage: "mappin.and.ellipse")
                 }
 
                 Button {
@@ -96,7 +99,7 @@ struct TripCardView: View {
                     showPhotoPicker = true
                     onAddPhoto()
                 } label: {
-                    Label("Add Photo", systemImage: "photo")
+                    Label("Photo", systemImage: "photo")
                 }
 
                 Button {
@@ -110,12 +113,12 @@ struct TripCardView: View {
                         ProgressView()
                             .progressViewStyle(.circular)
                     } else {
-                        Label("Suggest Photo", systemImage: "sparkles")
+                        Label("Suggest", systemImage: "sparkles")
                     }
                 }
                 .disabled(isSuggesting)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
 
             Spacer(minLength: 4)
 
@@ -149,6 +152,7 @@ struct TripCardView: View {
 
                 // Optional additional hook for parent if desired.
                 onCoordinateSetNeedsName(newCoordinate)
+                Task { await queueWeatherLoad(debounce: false) }
             }
         }
         .photosPicker(
@@ -161,7 +165,15 @@ struct TripCardView: View {
         }
         // Load / refresh weather when coordinate or date (or name) changes.
         .task(id: weatherTaskID) {
-            await loadWeatherIfPossible()
+            await queueWeatherLoad(debounce: true)
+        }
+        .alert("Suggest Photo Failed", isPresented: Binding(
+            get: { photoError != nil },
+            set: { newValue in if !newValue { photoError = nil } }
+        )) {
+            Button("OK", role: .cancel) { photoError = nil }
+        } message: {
+            Text(photoError ?? "Unknown error")
         }
     } // end var body
 
@@ -178,6 +190,10 @@ struct TripCardView: View {
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
+        } else if let message = weatherMessage {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         } else if isLoadingWeather {
             HStack {
                 ProgressView()
@@ -198,7 +214,7 @@ struct TripCardView: View {
                 Text("\(lat), \(lon)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            } else {
+            } else if place.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("No location selected")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -292,17 +308,45 @@ struct TripCardView: View {
     private func suggestPhotoForCurrentTrip() async {
         defer { isSuggesting = false }
         let name = place.trimmingCharacters(in: .whitespacesAndNewlines)
-        let query = name.isEmpty ? "the selected location" : name
+        let query: String
+        if name.isEmpty || name == "Unknown location" {
+            if let coordinate {
+                query = String(
+                    format: "location at %.3f, %.3f",
+                    coordinate.latitude,
+                    coordinate.longitude
+                )
+            } else {
+                query = "a notable travel destination"
+            }
+        } else {
+            query = name
+        }
         do {
             let img = try await OpenAIPhotoLinkService().suggestPhoto(for: query)
             images.append(img)
             onSuggestPhoto()
+            photoError = nil
         } catch {
             print("[OpenAI] Suggest photo failed: \(error)")
+            photoError = "We couldn't fetch a suggested photo right now. Please try again."
         }
     } // end func suggestPhotoForCurrentTrip
 
     // MARK: - Weather
+
+    /// Debounced weather loader that avoids firing until the user pauses typing.
+    @MainActor
+    private func queueWeatherLoad(debounce: Bool) async {
+        weatherFetchTask?.cancel()
+        weatherFetchTask = Task { @MainActor in
+            if debounce {
+                do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            await loadWeatherIfPossible()
+        }
+    } // end func queueWeatherLoad
 
     /// Loads weather for this card:
     /// - If coordinate exists, WeatherService will use it.
@@ -310,6 +354,7 @@ struct TripCardView: View {
     @MainActor
     private func loadWeatherIfPossible() async {
         isLoadingWeather = true
+        weatherMessage = nil
         defer { isLoadingWeather = false }
 
         // Build a Trip value for WeatherService; it only cares about
@@ -332,8 +377,10 @@ struct TripCardView: View {
             let unit: TemperatureUnit = .f  // Change to .c if you prefer Celsius.
             let forecast = try await svc.forecastForTripDate(for: tempTrip, unit: unit)
             todaysWeather = forecast
+            weatherMessage = forecast == nil ? "No Weather Forecast for Date" : nil
         } catch {
             todaysWeather = nil
+            weatherMessage = "No Weather Forecast for Date"
             print("[Weather] Failed to load forecast: \(error)")
         }
     } // end func loadWeatherIfPossible

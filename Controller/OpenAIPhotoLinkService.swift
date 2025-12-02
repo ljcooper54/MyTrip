@@ -21,28 +21,21 @@ struct OpenAIPhotoLinkService {
     func suggestPhoto(for locationName: String) async throws -> TripImage {
         print("[OpenAI] suggestPhoto(for: \"\(locationName)\")")
 
-        let link = try await fetchLink(from: locationName)
-
-        if let data = try? await downloadBinary(from: link),
-           let saved = try? ImageStore.shared.saveImage(data, source: .ai) {
-            print("[OpenAI] Download & save succeeded: \(saved.fileURL?.absoluteString ?? "no local URL")")
-            return TripImage(
-                id: saved.id,
-                fileURL: saved.fileURL,
-                remoteURL: link,
-                createdAt: saved.createdAt,
-                source: .ai
-            )
-        } else {
-            print("[OpenAI] Using remote URL only (download failed or save failed)")
-            return TripImage(
-                id: UUID(),
-                fileURL: nil,
-                remoteURL: link,
-                createdAt: Date(),
-                source: .ai
-            )
+        // First attempt
+        let firstLink = try await fetchLink(from: locationName)
+        if let downloaded = try? await saveImageFromRemote(firstLink) {
+            return downloaded
         }
+
+        // Fallback attempt with a second link to avoid broken URLs that render gray boxes.
+        print("[OpenAI] First link failed to download, retrying with a new suggestion…")
+        let retryLink = try await fetchLink(from: "\(locationName) landmark")
+        if let downloaded = try? await saveImageFromRemote(retryLink) {
+            return downloaded
+        }
+
+        print("[OpenAI] All attempts to download a suggested photo failed")
+        throw ErrorType.badResponse
     } // end func suggestPhoto
 
     // MARK: - Private helpers
@@ -171,5 +164,34 @@ struct OpenAIPhotoLinkService {
         }
         return data
     } // end func downloadBinary
+
+    /// Downloads a remote image and stores it locally when possible. Returns nil if the download fails.
+    private func saveImageFromRemote(_ link: URL) async throws -> TripImage? {
+        do {
+            let data = try await downloadBinary(from: link)
+            if let saved = try? ImageStore.shared.saveImage(data, source: .ai) {
+                print("[OpenAI] Download & save succeeded: \(saved.fileURL?.absoluteString ?? "no local URL")")
+                return TripImage(
+                    id: saved.id,
+                    fileURL: saved.fileURL,
+                    remoteURL: link,
+                    createdAt: saved.createdAt,
+                    source: .ai
+                )
+            } else {
+                print("[OpenAI] Downloaded image but failed to persist, using remote URL")
+                return TripImage(
+                    id: UUID(),
+                    fileURL: nil,
+                    remoteURL: link,
+                    createdAt: Date(),
+                    source: .ai
+                )
+            }
+        } catch {
+            print("[OpenAI] Unable to download suggested image: \(error)")
+            return nil
+        }
+    } // end func saveImageFromRemote
 } // end struct OpenAIPhotoLinkService
 
