@@ -51,7 +51,6 @@ struct TripCardView: View {
 
     @State private var todaysWeather: DailyWeather?
     @State private var isLoadingWeather = false
-    @State private var weatherMessage: String? = nil
     @State private var weatherFetchTask: Task<Void, Never>? = nil
 
     /// Used so that tapping Suggest / buttons can end editing cleanly.
@@ -166,14 +165,6 @@ struct TripCardView: View {
         // Load / refresh weather when coordinate or date (or name) changes.
         .task(id: weatherTaskID) {
             await queueWeatherLoad(debounce: true)
-        }
-        .alert("Suggest Photo Failed", isPresented: Binding(
-            get: { photoError != nil },
-            set: { newValue in if !newValue { photoError = nil } }
-        )) {
-            Button("OK", role: .cancel) { photoError = nil }
-        } message: {
-            Text(photoError ?? "Unknown error")
         }
     } // end var body
 
