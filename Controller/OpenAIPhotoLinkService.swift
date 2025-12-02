@@ -1,98 +1,174 @@
-// Copyright H2so4 Consulting LLC 2025
+// Copyright 2025 H2so4 Consulting LLC
 // File: Services/OpenAIPhotoLinkService.swift
 
 import Foundation
 
-/// Service that asks ChatGPT 4o-mini for a single **public-domain** iconic image link.
+/// Service that asks ChatGPT (gpt-4o-mini) for a single **public-domain** iconic image link.
 /// Logs presence of OPENAI_API_KEY with a masked print so you can confirm it's loaded.
-/// end struct OpenAIPhotoLinkService
+/// OpenAIPhotoLinkService
 struct OpenAIPhotoLinkService {
 
-    enum ErrorType: Swift.Error { case missingKey, badResponse, decode, noContent } // end enum ErrorType
+    enum ErrorType: Swift.Error {
+        case missingKey
+        case badResponse
+        case decode
+        case noContent
+    } // end enum ErrorType
 
+    /// Suggests a photo for the given location name and returns a TripImage.
+    /// It prefers downloading & saving the image locally; if that fails, it
+    /// still returns a TripImage with only `remoteURL` set.
     func suggestPhoto(for locationName: String) async throws -> TripImage {
+        print("[OpenAI] suggestPhoto(for: \"\(locationName)\")")
+
         let link = try await fetchLink(from: locationName)
+
         if let data = try? await downloadBinary(from: link),
            let saved = try? ImageStore.shared.saveImage(data, source: .ai) {
-            return TripImage(id: saved.id, fileURL: saved.fileURL, remoteURL: link, createdAt: saved.createdAt, source: .ai)
+            print("[OpenAI] Download & save succeeded: \(saved.fileURL?.absoluteString ?? "no local URL")")
+            return TripImage(
+                id: saved.id,
+                fileURL: saved.fileURL,
+                remoteURL: link,
+                createdAt: saved.createdAt,
+                source: .ai
+            )
         } else {
-            return TripImage(id: UUID(), fileURL: nil, remoteURL: link, createdAt: Date(), source: .ai)
+            print("[OpenAI] Using remote URL only (download failed or save failed)")
+            return TripImage(
+                id: UUID(),
+                fileURL: nil,
+                remoteURL: link,
+                createdAt: Date(),
+                source: .ai
+            )
         }
-    } // end func suggestPhoto(for:)
+    } // end func suggestPhoto
 
-    // MARK: - Internals
+    // MARK: - Private helpers
 
+    /// Returns the OPENAI_API_KEY from Info.plist, or throws if missing.
     private func apiKey() throws -> String {
-        guard let raw = Bundle.main.object(forInfoDictionaryKey: "OPENAI_API_KEY") as? String else {
-            print("[OpenAI] OPENAI_API_KEY not found in Info.plist") // why: diagnose integration
+        let key = Bundle.main.infoDictionary?["OPENAI_API_KEY"] as? String
+        guard let value = key, !value.isEmpty else {
+            print("[OpenAI] OPENAI_API_KEY not found in Info.plist")
             throw ErrorType.missingKey
         }
-        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            print("[OpenAI] OPENAI_API_KEY is empty")
-            throw ErrorType.missingKey
-        }
-        // Log masked key so you can verify Secrets.xcconfig is wired in.
-        let prefix = key.prefix(4)
-        let suffix = key.suffix(4)
-        print("[OpenAI] API key loaded: \(prefix)…\(suffix) (len: \(key.count))")
-        return key
+        let masked = String(value.prefix(5)) + "…" + String(value.suffix(4))
+        print("[OpenAI] API key loaded: \(masked) (len: \(value.count))")
+        return value
     } // end func apiKey
 
+    /// Calls the OpenAI chat/completions endpoint and extracts a direct image URL.
     private func fetchLink(from locationName: String) async throws -> URL {
         let key = try apiKey()
-        var req = URLRequest(url: URL(string: "https://api.openai.com/v1/chat/completions")!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
 
-        let prompt = "Give me a link to a public-domain picture, drawing, or photograph that is iconic for the location: \(locationName)"
-        let body: [String: Any] = [
-            "model": "gpt-4o-mini",
-            "temperature": 0,
-            "messages": [
-                ["role": "system", "content": "You return only one direct HTTP URL (no markdown, no commentary). Prefer Wikimedia Commons or other public-domain sources."],
-                ["role": "user", "content": prompt]
-            ]
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+        var req = URLRequest(url: endpoint, timeoutInterval: 20)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+
+        struct ChatMessage: Encodable {
+            let role: String
+            let content: String
+        } // end struct ChatMessage
+
+        struct ChatRequest: Encodable {
+            let model: String
+            let messages: [ChatMessage]
+            let temperature: Double
+        } // end struct ChatRequest
+
+        let systemPrompt = """
+        You are an image URL selector. Return EXACTLY ONE direct URL to a public-domain or freely usable iconic image for the requested location.
+
+        Rules:
+        - The URL MUST point directly to an image file and end with .jpg, .jpeg, .png, or .webp.
+        - DO NOT return any page URLs like "https://commons.wikimedia.org/wiki/File:...".
+        - DO NOT return markdown, HTML, captions, or extra text. Only the bare URL.
+        """
+
+        let userPrompt = """
+        Give me one direct URL to a public-domain or freely usable iconic image for this location: "\(locationName)".
+        Remember: the URL must be a direct image URL ending in .jpg, .jpeg, .png, or .webp.
+        """
+
+        let payload = ChatRequest(
+            model: "gpt-4o-mini",
+            messages: [
+                ChatMessage(role: "system", content: systemPrompt),
+                ChatMessage(role: "user", content: userPrompt)
+            ],
+            temperature: 0.3
+        )
+
+        let body = try JSONEncoder().encode(payload)
+        req.httpBody = body
 
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            print("[OpenAI] HTTP status: \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            print("[OpenAI] HTTP failure: \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
             throw ErrorType.badResponse
         }
 
-        struct R: Decodable {
-            struct Choice: Decodable { struct Msg: Decodable { let content: String }; let message: Msg }
-            let choices: [Choice]
-        } // end struct R
+        struct ChoiceMessage: Decodable {
+            let content: String
+        } // end struct ChoiceMessage
 
-        let decoded = try JSONDecoder().decode(R.self, from: data)
-        guard let text = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) else {
+        struct Choice: Decodable {
+            let message: ChoiceMessage
+        } // end struct Choice
+
+        struct ChatResponse: Decodable {
+            let choices: [Choice]
+        } // end struct ChatResponse
+
+        let decoded: ChatResponse
+        do {
+            decoded = try JSONDecoder().decode(ChatResponse.self, from: data)
+        } catch {
+            print("[OpenAI] Decode error: \(error)")
+            throw ErrorType.decode
+        }
+
+        guard let text = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            print("[OpenAI] Empty content in response")
             throw ErrorType.noContent
         }
-        guard let url = extractFirstURL(in: text).flatMap(URL.init(string:)) else {
-            print("[OpenAI] Could not parse URL from response: \(text)")
+
+        guard let urlString = extractFirstImageURL(in: text),
+              let url = URL(string: urlString) else {
+            print("[OpenAI] Could not parse direct image URL from response: \(text)")
             throw ErrorType.noContent
         }
+
         print("[OpenAI] Suggested URL: \(url.absoluteString)")
         return url
     } // end func fetchLink(from:)
 
-    private func extractFirstURL(in text: String) -> String? {
-        let pattern = #"https?://\S+"#
+    /// Extracts the first URL that looks like a direct image URL.
+    private func extractFirstImageURL(in text: String) -> String? {
+        // Match URLs ending with .jpg, .jpeg, .png, or .webp
+        let pattern = #"https?://\S+\.(?:jpg|jpeg|png|webp)"#
         if let range = text.range(of: pattern, options: .regularExpression) {
             return String(text[range])
         }
         return nil
-    } // end func extractFirstURL
+    } // end func extractFirstImageURL
 
+    /// Simple binary download helper that throws if status != 200.
     private func downloadBinary(from url: URL) async throws -> Data {
+        print("[OpenAI] downloadBinary: \(url.absoluteString)")
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.httpMethod = "GET"
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw ErrorType.badResponse }
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            print("[OpenAI] downloadBinary: HTTP \(code) for \(url.absoluteString)")
+            throw ErrorType.badResponse
+        }
         return data
     } // end func downloadBinary
 } // end struct OpenAIPhotoLinkService

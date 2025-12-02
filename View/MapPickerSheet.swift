@@ -1,4 +1,4 @@
-// Copyright H2so4 Consulting LLC 2025
+// Copyright 2025 H2so4 Consulting LLC
 // File: View/MapPickerSheet.swift
 
 import SwiftUI
@@ -6,14 +6,23 @@ import MapKit
 import CoreLocation
 
 /// Crosshair-centered picker: move the map; the **center** is your selection.
-/// We track the center via `.onMapCameraChange` to avoid snapshot conversions.
-/// end struct MapPickerSheet
+/// We track the center via `.onMapCameraChange` and use MapKit search for labels.
+/// MapPickerSheet
+@MainActor
 struct MapPickerSheet: View {
 
     // MARK: - Inputs
 
-    var initial: CLLocationCoordinate2D?
-    var onPick: (CLLocationCoordinate2D, String) -> Void
+    /// Optional starting coordinate (e.g., from the current Trip).
+    let initial: CLLocationCoordinate2D?
+
+    /// Called when the user taps "Done" with the chosen coordinate and its label.
+    let onPick: (CLLocationCoordinate2D, String) -> Void
+
+    // MARK: - Static state (shared across uses)
+
+    /// Last-used coordinate so new cards can start where the user last picked.
+    private static var lastUsedCoordinate: CLLocationCoordinate2D?
 
     // MARK: - State
 
@@ -21,78 +30,125 @@ struct MapPickerSheet: View {
     @State private var camera: MapCameraPosition = .automatic
     @State private var centerCoord: CLLocationCoordinate2D? = nil
     @State private var pendingName: String = "Unknown location"
+    @State private var isLookingUpName: Bool = false
 
     // MARK: - Body
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Map(position: $camera)
-                    .onAppear {
-                        if let c = initial {
-                            camera = .region(MKCoordinateRegion(center: c, span: .init(latitudeDelta: 0.12, longitudeDelta: 0.12)))
-                            centerCoord = c
-                            Task { await updatePreviewName(c) }
-                        }
-                    } // end .onAppear
-                    .onMapCameraChange { ctx in
-                        // Keep center coordinate up to date as user pans/zooms.
-                        centerCoord = ctx.region.center
-                    } // end .onMapCameraChange
+                mapView
 
+                // Crosshair in the middle of the map
                 CrosshairView()
-                    .frame(width: 40, height: 40)
-                    .allowsHitTesting(false)
 
+                // Bottom label showing the resolved name
                 VStack {
                     Spacer()
-                    Text(pendingName)
-                        .font(.footnote)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(.thinMaterial, in: Capsule())
-                        .padding(.bottom, 16)
-                        .allowsHitTesting(false)
-                } // end VStack
-            } // end ZStack
-            .navigationTitle("Pick Location")
+                    HStack(spacing: 6) {
+                        if isLookingUpName {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        }
+                        Text(pendingName)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.thinMaterial)
+                    .clipShape(Capsule())
+                    .padding(.bottom, 32)
+                }
+            }
+            .navigationTitle("Choose Location")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                } // end ToolbarItem
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Use") {
-                        guard let coord = centerCoord else { return }
-                        Task {
-                            let finalName = (try? await ReverseGeocoderService.shared.nearestPlaceName(near: coord)) ?? pendingName
-                            onPick(coord, finalName)
-                            dismiss()
-                        }
-                    }
-                } // end ToolbarItem
-            } // end .toolbar
-        } // end NavigationStack
+                    Button("Done") { confirmSelection() }
+                        .disabled(centerCoord == nil)
+                }
+            }
+        }
     } // end var body
+
+    // MARK: - Map view
+
+    @ViewBuilder
+    private var mapView: some View {
+        Map(position: $camera)
+            .mapStyle(.standard)
+            .mapControls {
+                MapCompass()
+                MapPitchToggle()
+                MapScaleView()
+            }
+            .onAppear {
+                configureInitialCamera()
+            }
+            .onMapCameraChange { ctx in
+                let center = ctx.region.center
+                centerCoord = center
+                Task { await updatePreviewName(for: center) }
+            }
+    } // end var mapView
 
     // MARK: - Helpers
 
-    private func updatePreviewName(_ coord: CLLocationCoordinate2D) async {
-        if let name = try? await ReverseGeocoderService.shared.nearestPlaceName(near: coord) {
-            pendingName = name
+    /// Sets the starting camera region using either `initial` or `lastUsedCoordinate`.
+    private func configureInitialCamera() {
+        if let start = initial ?? MapPickerSheet.lastUsedCoordinate {
+            let span = MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+            camera = .region(MKCoordinateRegion(center: start, span: span))
+            centerCoord = start
+            Task { await updatePreviewName(for: start) }
         } else {
-            pendingName = "Unknown location"
+            // Leave camera as .automatic; center/name will be updated as soon as Map reports back.
         }
-    } // end func updatePreviewName(_:)
+    } // end func configureInitialCamera
+
+    /// Confirms the current center coordinate and calls `onPick`.
+    private func confirmSelection() {
+        guard let center = centerCoord else {
+            dismiss()
+            return
+        }
+        MapPickerSheet.lastUsedCoordinate = center
+        onPick(center, pendingName)
+        dismiss()
+    } // end func confirmSelection
+
+    /// Uses ReverseGeocoderService (MapKit-based) to get a friendly name.
+    private func updatePreviewName(for coord: CLLocationCoordinate2D) async {
+        isLookingUpName = true
+        defer { isLookingUpName = false }
+        do {
+            let label = try await ReverseGeocoderService.shared.nearestPlaceName(near: coord)
+            pendingName = label
+        } catch {
+            pendingName = "Unknown location"
+            print("[ReverseGeocoder] lookup failed: \(error)")
+        }
+    } // end func updatePreviewName
 } // end struct MapPickerSheet
 
 /// Simple crosshair drawing.
-/// end struct CrosshairView
+/// CrosshairView
 private struct CrosshairView: View {
     var body: some View {
         ZStack {
-            Rectangle().frame(width: 24, height: 1).foregroundStyle(.primary.opacity(0.8))
-            Rectangle().frame(width: 1, height: 24).foregroundStyle(.primary.opacity(0.8))
-            Circle().frame(width: 4, height: 4).foregroundStyle(.red)
+            Rectangle()
+                .frame(width: 24, height: 1)
+                .foregroundStyle(.primary.opacity(0.8))
+            Rectangle()
+                .frame(width: 1, height: 24)
+                .foregroundStyle(.primary.opacity(0.8))
+            Circle()
+                .frame(width: 4, height: 4)
+                .foregroundStyle(.red)
         } // end ZStack
         .accessibilityHidden(true)
     } // end var body

@@ -1,278 +1,341 @@
-// Copyright H2so4 Consulting LLC 2025
+// Copyright 2025 H2so4 Consulting LLC
 // File: View/TripCardView.swift
 
 import SwiftUI
+import CoreLocation
 import PhotosUI
+import UIKit
 
-/// Trip card with editable **Place**, photos (carousel), "Suggest Picture" (ChatGPT 4o-mini)
-/// and weather footer. Supports **inline Save/Cancel** when in edit mode.
-/// Weather auto-updates on date/location/name changes; 1h cache prevents refetch spam.
-/// end struct TripCardView
+/// TripCardView shows one trip as a card, with in-place editing for
+/// place, date, pick location, add/suggest photo, weather, and a trash-can delete button.
+/// TripCardView
 struct TripCardView: View {
+    // MARK: - Bindings into the model
 
-    // MARK: - Inputs
+    /// Place / title text for this trip, bound to `Trip.place`.
+    @Binding var place: String
 
-    @EnvironmentObject private var app: AppState
-    @Environment(\.tripEditControls) private var edit
-    @Binding var trip: Trip
+    /// Date for this trip, bound to `Trip.date`.
+    @Binding var date: Date
 
-    // MARK: - State
+    /// Optional coordinate for this trip, bound to `Trip.coordinate`.
+    @Binding var coordinate: CLLocationCoordinate2D?
 
-    @State private var isGenerating = false
-    @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var selectionIndex: Int = 0
-    @State private var daily: DailyWeather? = nil
-    @State private var loadingWeather = false
-    @State private var showMapPicker = false
+    /// Array of images for this trip, bound to `Trip.images`.
+    @Binding var images: [TripImage]
 
-    // MARK: - Derived
+    // MARK: - Callbacks to the parent
 
-    private var isEditing: Bool { edit.isEditing(trip.id) } // end var isEditing
+    /// Called when the user taps "Pick Location". Parent can hook into this if needed.
+    var onPickLocation: () -> Void
 
-    /// Weather recompute key
-    /// end var weatherTaskID
-    private var weatherTaskID: String {
-        let unitKey = app.unit.rawValue
-        let dateKey = Calendar.current.startOfDay(for: trip.date).timeIntervalSince1970
-        let locKey = "\(trip.latitude ?? .nan)|\(trip.longitude ?? .nan)"
-        let nameKey = (trip.customName ?? trip.locationName)
-        return "\(unitKey)|\(dateKey)|\(locKey)|\(nameKey)"
-    } // end var weatherTaskID
+    /// Called when the user taps "Add Photo". Parent can hook into this if needed.
+    var onAddPhoto: () -> Void
 
-    // MARK: - Body
+    /// Called when the user taps "Suggest Photo". Parent can hook into this if needed.
+    var onSuggestPhoto: () -> Void
+
+    /// Called when the trash-can icon is tapped (confirmation handled by parent).
+    var onDeleteTapped: () -> Void
+
+    /// Optional: parent hook in case you still want to do extra work on coordinate changes.
+    var onCoordinateSetNeedsName: (CLLocationCoordinate2D) -> Void = { _ in }
+
+    // MARK: - Local UI state
+
+    @State private var showLocationPicker = false
+    @State private var showPhotoPicker = false
+    @State private var isSuggesting = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
+
+    @State private var todaysWeather: DailyWeather?
+    @State private var isLoadingWeather = false
+
+    /// Used so that tapping Suggest / buttons can end editing cleanly.
+    @FocusState private var placeFieldFocused: Bool
+
+    /// Convenience: primary image to show on the card (most recent).
+    private var primaryImage: TripImage? {
+        images.last
+    } // end var primaryImage
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            imageSection
-            if isEditing { editButtons } // show Save/Cancel at bottom while editing
-            weatherFooter
-        } // end VStack
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
-        .task(id: weatherTaskID) { await loadWeather() }
-        .onChange(of: pickerItems) { Task { await importPickedPhotos() } }
-        .sheet(isPresented: $showMapPicker) {
-            MapPickerSheet(initial: app.lastPickedCoordinate ?? trip.coordinate) { pickedCoord, placeName in
-                app.lastPickedCoordinate = pickedCoord
-                trip.latitude = pickedCoord.latitude
-                trip.longitude = pickedCoord.longitude
-                if trip.isNameUserEdited == false { trip.customName = (placeName == "Unknown location") ? nil : placeName }
-                Task { await loadWeather() }
+        VStack(spacing: 12) {
+            // Place + date row
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                TextField("Place", text: $place)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($placeFieldFocused)
+                    .submitLabel(.done)
+
+                DatePicker(
+                    "",
+                    selection: $date,
+                    displayedComponents: [.date]
+                )
+                .labelsHidden()
             }
-        } // end .sheet
+
+            // Photo (if any)
+            if let primaryImage {
+                imageView(for: primaryImage)
+            }
+
+            // Buttons row: Pick location / Add photo / Suggest photo
+            HStack(spacing: 10) {
+                Button {
+                    placeFieldFocused = false
+                    showLocationPicker = true
+                    onPickLocation()
+                } label: {
+                    Label("Pick Location", systemImage: "mappin.and.ellipse")
+                }
+
+                Button {
+                    placeFieldFocused = false
+                    showPhotoPicker = true
+                    onAddPhoto()
+                } label: {
+                    Label("Add Photo", systemImage: "photo")
+                }
+
+                Button {
+                    placeFieldFocused = false
+                    isSuggesting = true
+                    Task {
+                        await suggestPhotoForCurrentTrip()
+                    }
+                } label: {
+                    if isSuggesting {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                    } else {
+                        Label("Suggest Photo", systemImage: "sparkles")
+                    }
+                }
+                .disabled(isSuggesting)
+            }
+            .buttonStyle(.bordered)
+
+            Spacer(minLength: 4)
+
+            // Bottom: weather strip + coordinate + trash.
+            VStack(spacing: 4) {
+                weatherStrip
+                coordinateRow
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color(.separator), lineWidth: 0.5)
+        )
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .sheet(isPresented: $showLocationPicker) {
+            // Uses MapPickerSheet(initial:onPick:) with (coordinate, name) closure.
+            MapPickerSheet(initial: coordinate) { newCoordinate, name in
+                coordinate = newCoordinate
+
+                let trimmed = place.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    // If the user hasn't typed a name yet, use the provided human-friendly name.
+                    place = name
+                }
+
+                // Optional additional hook for parent if desired.
+                onCoordinateSetNeedsName(newCoordinate)
+            }
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $selectedPhotoItem,
+            matching: .images
+        )
+        .task(id: selectedPhotoItem) {
+            await handleSelectedPhotoItem()
+        }
+        // Load / refresh weather when coordinate or date (or name) changes.
+        .task(id: weatherTaskID) {
+            await loadWeatherIfPossible()
+        }
     } // end var body
 
-    // MARK: - Sections
+    // MARK: - Subviews
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-
-            // "Place" on its own line
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Place").font(.caption).foregroundStyle(.secondary)
-                TextField("Place", text: Binding(
-                    get: { trip.customName ?? trip.displayName },
-                    set: { newValue in
-                        trip.customName = newValue
-                        trip.isNameUserEdited = true
-                    })
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.title2.weight(.semibold))
-            } // end VStack(Place)
-
-            HStack(spacing: 12) {
-                DatePicker("", selection: Binding(get: { trip.date }, set: { trip.date = $0 }), displayedComponents: .date)
-                    .labelsHidden()
-
-                Spacer()
-
-                Button { showMapPicker = true } label: { Label("Pick Location", systemImage: "mappin.circle") }
-                    .buttonStyle(.bordered)
-            } // end HStack
-        } // end VStack
-    } // end var header
-
+    /// Weather strip view.
     @ViewBuilder
-    private var imageSection: some View {
-        if trip.images.isEmpty {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.12)).frame(height: 220)
-                VStack(spacing: 12) {
-                    Text("No photos yet").font(.subheadline).foregroundStyle(.secondary)
-                    HStack(spacing: 12) {
-                        PhotosPicker("Add Photos", selection: $pickerItems, maxSelectionCount: 6, matching: .images)
-                            .buttonStyle(.borderedProminent)
-                        Button {
-                            Task { await suggestPicture() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isGenerating { ProgressView().controlSize(.small) } // spinner while slow API
-                                Image(systemName: "wand.and.stars")
-                                Text(isGenerating ? "Fetching…" : "Suggest Picture")
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isGenerating)
-                    } // end HStack
-                } // end VStack
-            } // end ZStack
-        } else {
-            ZStack {
-                TabView(selection: $selectionIndex) {
-                    ForEach(Array(trip.images.enumerated()), id: \.element.id) { index, img in
-                        ZStack(alignment: .topTrailing) {
-                            tripImageView(img)
-                                .frame(height: 240)
-                                .clipped()
-                                .cornerRadius(12)
-
-                            Button(role: .destructive) { deleteImage(at: index) } label: {
-                                Image(systemName: "trash")
-                                    .padding(8)
-                                    .background(.thinMaterial)
-                                    .clipShape(Circle())
-                            }
-                            .padding(10)
-                        } // end ZStack
-                        .tag(index)
-                    }
-                } // end TabView
-                .frame(height: 250)
-                .tabViewStyle(.page(indexDisplayMode: .always))
-
-                HStack {
-                    Image(systemName: "chevron.left"); Spacer(); Image(systemName: "chevron.right")
-                }
-                .font(.title3).opacity(0.6).padding(.horizontal, 8).allowsHitTesting(false)
-            } // end ZStack
-
+    private var weatherStrip: some View {
+        if let weather = todaysWeather {
             HStack {
-                PhotosPicker("Add Photos", selection: $pickerItems, maxSelectionCount: 6, matching: .images)
-                    .buttonStyle(.borderedProminent)
-                Spacer(minLength: 0)
-                Button { Task { await suggestPicture() } } label: {
-                    HStack(spacing: 8) {
-                        if isGenerating { ProgressView().controlSize(.small) }
-                        Label("Suggest Picture", systemImage: "wand.and.stars")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(isGenerating)
-            } // end HStack
-        } // end if-else
-    } // end var imageSection
+                Text("\(Int(round(weather.high)))° / \(Int(round(weather.low)))°")
+                Text("•")
+                Text("Rain \(Int(round(weather.pop * 100)))%")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        } else if isLoadingWeather {
+            HStack {
+                ProgressView()
+                Text("Loading weather…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        }
+    } // end var weatherStrip
 
-    /// Inline edit buttons (bottom of card) shown only in edit mode.
-    /// end var editButtons
-    private var editButtons: some View {
+    /// Coordinate + trash row.
+    @ViewBuilder
+    private var coordinateRow: some View {
         HStack {
-            Button(role: .cancel) {
-                edit.removeTrip(trip.id)               // discard draft
-            } label: { Text("Cancel") }
-            .buttonStyle(.bordered)
+            if let coordinate {
+                let lat = String(format: "%.3f", coordinate.latitude)
+                let lon = String(format: "%.3f", coordinate.longitude)
+                Text("\(lat), \(lon)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No location selected")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
-            Button {
-                edit.setEditing(trip.id, false)        // commit: just exit edit mode; data already bound
-                edit.commitTrip(trip.id)
-            } label: { Text("Save") }
-            .buttonStyle(.borderedProminent)
-            .disabled((trip.customName ?? trip.locationName).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } // end HStack
-        .padding(.top, 4)
-    } // end var editButtons
-
-    private var weatherFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider()
-            if loadingWeather {
-                HStack { ProgressView(); Text("Fetching forecast…") }
-                    .font(.footnote).foregroundStyle(.secondary)
-            } else if let d = daily {
-                let unitSymbol = (app.unit == .f) ? "°F" : "°C"
-                HStack(spacing: 16) {
-                    Label("High: \(Int(round(d.high)))\(unitSymbol)", systemImage: "thermometer.sun")
-                    Label("Low: \(Int(round(d.low)))\(unitSymbol)", systemImage: "thermometer.snowflake")
-                    Label("Precip: \(Int(round(d.pop * 100)))%", systemImage: "cloud.rain")
-                }
-                .font(.footnote)
-            } else {
-                Text("No Weather Found").font(.footnote).foregroundStyle(.secondary)
+            Button(role: .destructive) {
+                onDeleteTapped()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.title3)
             }
-        } // end VStack
-    } // end var weatherFooter
-
-    // MARK: - Helpers & Actions
-
-    @ViewBuilder
-    private func tripImageView(_ img: TripImage) -> some View {
-        if let file = img.fileURL, let ui = ImageStore.shared.loadImage(file) {
-            Image(uiImage: ui).resizable().scaledToFill()
-        } else if let url = img.remoteURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFill()
-                case .failure(_): placeholderImage
-                case .empty: ProgressView()
-                @unknown default: placeholderImage
-                }
-            }
-        } else { placeholderImage }
-    } // end func tripImageView
-
-    private var placeholderImage: some View {
-        Rectangle().fill(Color.gray.opacity(0.1))
-            .overlay(Text("Image unavailable").foregroundStyle(.secondary))
-    } // end var placeholderImage
-
-    private func importPickedPhotos() async {
-        guard !pickerItems.isEmpty else { return }
-        do {
-            var newImages: [TripImage] = []
-            for item in pickerItems {
-                if let data = try await item.loadTransferable(type: Data.self) {
-                    let saved = try ImageStore.shared.saveImage(data, source: .user)
-                    let ti = TripImage(id: saved.id, fileURL: saved.fileURL, remoteURL: nil, createdAt: saved.createdAt, source: .user)
-                    newImages.append(ti)
-                }
-            } // end for
-            trip.images.append(contentsOf: newImages)
-            pickerItems.removeAll()
-        } catch { print("Photo import failed: \(error)") }
-    } // end func importPickedPhotos
-
-    private func suggestPicture() async {
-        guard !isGenerating else { return }
-        isGenerating = true
-        defer { isGenerating = false }
-        do {
-            let service = OpenAIPhotoLinkService()
-            let promptName = trip.customName?.isEmpty == false ? (trip.customName ?? "") : trip.displayName
-            let img = try await service.suggestPhoto(for: promptName)
-            trip.images.append(img)
-        } catch {
-            print("OpenAI photo link failed: \(error)")
+            .accessibilityLabel("Delete Trip")
         }
-    } // end func suggestPicture
+    } // end var coordinateRow
 
-    private func deleteImage(at index: Int) {
-        guard trip.images.indices.contains(index) else { return }
-        let img = trip.images[index]
-        if let file = img.fileURL { try? FileManager.default.removeItem(at: file) }
-        trip.images.remove(at: index)
-        selectionIndex = max(0, min(selectionIndex, trip.images.count - 1))
-    } // end func deleteImage
+    /// Unique ID for weather-loading task based on coordinate + date + place text.
+    private var weatherTaskID: String {
+        let coordPart: String
+        if let c = coordinate {
+            coordPart = "\(c.latitude.rounded())_\(c.longitude.rounded())"
+        } else {
+            coordPart = "noCoord"
+        }
+        let day = Calendar.current.startOfDay(for: date)
+        let namePart = place.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(coordPart)_\(day.timeIntervalSince1970)_\(namePart)"
+    } // end var weatherTaskID
 
-    private func loadWeather() async {
-        loadingWeather = true; defer { loadingWeather = false }
+    /// Builds a SwiftUI image view for a TripImage, preferring local file over remote URL.
+    @ViewBuilder
+    private func imageView(for img: TripImage) -> some View {
+        if let fileURL = img.fileURL,
+           let data = try? Data(contentsOf: fileURL),
+           let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: 180)
+                .clipped()
+                .cornerRadius(10)
+        } else if let remote = img.remoteURL {
+            AsyncImage(url: remote) { phase in
+                switch phase {
+                case .empty:
+                    ProgressView()
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                case .failure:
+                    Color.gray.opacity(0.2)
+                @unknown default:
+                    Color.gray.opacity(0.2)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: 180)
+            .clipped()
+            .cornerRadius(10)
+        }
+    } // end func imageView
+
+    // MARK: - Photo & OpenAI helpers
+
+    /// Handles the selected photo from PhotosPicker by saving it via ImageStore
+    /// and appending a TripImage to `images`.
+    @MainActor
+    private func handleSelectedPhotoItem() async {
+        guard let item = selectedPhotoItem else { return }
         do {
-            let unit: TemperatureUnit = (app.unit == .f) ? .f : .c
+            if let data = try await item.loadTransferable(type: Data.self) {
+                if let saved = try? ImageStore.shared.saveImage(data, source: .user) {
+                    let tripImage = TripImage(
+                        id: saved.id,
+                        fileURL: saved.fileURL,
+                        remoteURL: nil,
+                        createdAt: saved.createdAt,
+                        source: .user
+                    )
+                    images.append(tripImage)
+                }
+            }
+        } catch {
+            print("[Photos] Failed to load selected image: \(error)")
+        }
+    } // end func handleSelectedPhotoItem
+
+    /// Suggests a photo for the current trip using OpenAIPhotoLinkService and appends it.
+    @MainActor
+    private func suggestPhotoForCurrentTrip() async {
+        defer { isSuggesting = false }
+        let name = place.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = name.isEmpty ? "the selected location" : name
+        do {
+            let img = try await OpenAIPhotoLinkService().suggestPhoto(for: query)
+            images.append(img)
+            onSuggestPhoto()
+        } catch {
+            print("[OpenAI] Suggest photo failed: \(error)")
+        }
+    } // end func suggestPhotoForCurrentTrip
+
+    // MARK: - Weather
+
+    /// Loads weather for this card:
+    /// - If coordinate exists, WeatherService will use it.
+    /// - Otherwise, it will geocode the typed name (customName) using MapKit.
+    @MainActor
+    private func loadWeatherIfPossible() async {
+        isLoadingWeather = true
+        defer { isLoadingWeather = false }
+
+        // Build a Trip value for WeatherService; it only cares about
+        // coordinate + date and name for geocoding.
+        let trimmedName = place.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tempTrip = Trip(
+            id: UUID(),
+            locationName: trimmedName.isEmpty ? "Unknown" : trimmedName,
+            date: date,
+            customName: trimmedName.isEmpty ? nil : trimmedName,
+            isNameUserEdited: !trimmedName.isEmpty,
+            city: nil,
+            latitude: coordinate?.latitude,
+            longitude: coordinate?.longitude,
+            images: images
+        )
+
+        do {
             let svc = WeatherService()
-            self.daily = try await svc.forecastForTripDate(for: trip, unit: unit)
-        } catch { self.daily = nil }
-    } // end func loadWeather
+            let unit: TemperatureUnit = .f  // Change to .c if you prefer Celsius.
+            let forecast = try await svc.forecastForTripDate(for: tempTrip, unit: unit)
+            todaysWeather = forecast
+        } catch {
+            todaysWeather = nil
+            print("[Weather] Failed to load forecast: \(error)")
+        }
+    } // end func loadWeatherIfPossible
 } // end struct TripCardView
 
