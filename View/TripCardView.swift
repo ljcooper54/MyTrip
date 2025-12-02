@@ -50,6 +50,7 @@ struct TripCardView: View {
 
     @State private var todaysWeather: DailyWeather?
     @State private var isLoadingWeather = false
+    @State private var weatherFetchTask: Task<Void, Never>? = nil
 
     /// Used so that tapping Suggest / buttons can end editing cleanly.
     @FocusState private var placeFieldFocused: Bool
@@ -149,6 +150,7 @@ struct TripCardView: View {
 
                 // Optional additional hook for parent if desired.
                 onCoordinateSetNeedsName(newCoordinate)
+                Task { await queueWeatherLoad(debounce: false) }
             }
         }
         .photosPicker(
@@ -161,7 +163,7 @@ struct TripCardView: View {
         }
         // Load / refresh weather when coordinate or date (or name) changes.
         .task(id: weatherTaskID) {
-            await loadWeatherIfPossible()
+            await queueWeatherLoad(debounce: true)
         }
     } // end var body
 
@@ -292,7 +294,20 @@ struct TripCardView: View {
     private func suggestPhotoForCurrentTrip() async {
         defer { isSuggesting = false }
         let name = place.trimmingCharacters(in: .whitespacesAndNewlines)
-        let query = name.isEmpty ? "the selected location" : name
+        let query: String
+        if name.isEmpty || name == "Unknown location" {
+            if let coordinate {
+                query = String(
+                    format: "location at %.3f, %.3f",
+                    coordinate.latitude,
+                    coordinate.longitude
+                )
+            } else {
+                query = "a notable travel destination"
+            }
+        } else {
+            query = name
+        }
         do {
             let img = try await OpenAIPhotoLinkService().suggestPhoto(for: query)
             images.append(img)
@@ -303,6 +318,19 @@ struct TripCardView: View {
     } // end func suggestPhotoForCurrentTrip
 
     // MARK: - Weather
+
+    /// Debounced weather loader that avoids firing until the user pauses typing.
+    @MainActor
+    private func queueWeatherLoad(debounce: Bool) async {
+        weatherFetchTask?.cancel()
+        weatherFetchTask = Task { @MainActor in
+            if debounce {
+                do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            await loadWeatherIfPossible()
+        }
+    } // end func queueWeatherLoad
 
     /// Loads weather for this card:
     /// - If coordinate exists, WeatherService will use it.

@@ -27,6 +27,7 @@ final class GeocoderService {
     static let shared = GeocoderService()
     private var currentSearch: MKLocalSearch?
     private let cache = NSCache<NSString, NSValue>() // NSValue(mkCoordinate:)
+    private(set) var lastResolvedCoordinate: CLLocationCoordinate2D?
     private init() { cache.countLimit = 256 } // end init
 
     /// Geocode a place/city string.
@@ -35,6 +36,7 @@ final class GeocoderService {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { throw GeocoderError.invalidQuery }
         if let v = cache.object(forKey: NSString(string: query.lowercased())) {
+            lastResolvedCoordinate = v.mkCoordinateValue
             return v.mkCoordinateValue
         }
         currentSearch?.cancel(); currentSearch = nil
@@ -51,20 +53,30 @@ final class GeocoderService {
         guard let item = resp.mapItems.first else { throw GeocoderError.notFound }
         let coord = item.location.coordinate
         cache.setObject(NSValue(mkCoordinate: coord), forKey: NSString(string: query.lowercased()))
+        lastResolvedCoordinate = coord
         return coord
     } // end func geocode(city:)
 
     /// Prefer numeric coords; otherwise prefer **customName** if user-edited, then city, then locationName.
     /// end func geocode(for:)
     func geocode(for trip: Trip) async throws -> CLLocationCoordinate2D {
-        if let c = trip.coordinate { return c }
+        if let c = trip.coordinate {
+            lastResolvedCoordinate = c
+            return c
+        }
         if let cn = trip.customName?.trimmingCharacters(in: .whitespacesAndNewlines), !cn.isEmpty {
-            return try await geocode(city: cn)
+            let coord = try await geocode(city: cn)
+            lastResolvedCoordinate = coord
+            return coord
         }
         if let ct = trip.city?.trimmingCharacters(in: .whitespacesAndNewlines), !ct.isEmpty {
-            return try await geocode(city: ct)
+            let coord = try await geocode(city: ct)
+            lastResolvedCoordinate = coord
+            return coord
         }
-        return try await geocode(city: trip.locationName)
+        let coord = try await geocode(city: trip.locationName)
+        lastResolvedCoordinate = coord
+        return coord
     } // end func geocode(for:)
 } // end final class GeocoderService
 

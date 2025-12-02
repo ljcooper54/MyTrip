@@ -5,7 +5,7 @@ import SwiftUI
 import CoreLocation
 
 /// TripCardsView shows the horizontally swipable deck of trip cards,
-/// with + to add a blank card, red arrows as swipe affordances, and delete + auto-naming support.
+/// with red arrows as swipe affordances and delete + auto-naming support.
 /// TripCardsView
 struct TripCardsView: View {
     /// Binding into the array of trips owned by PlannerView.
