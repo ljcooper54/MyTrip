@@ -5,17 +5,18 @@ import Foundation
 import CoreLocation
 import MapKit
 
-/// Reverse label lookup near a coordinate using `MKLocalSearch` (avoids deprecated CLGeocoder).
-/// end final class ReverseGeocoderService
+// ReverseGeocoderService converts coordinates to a readable place name using MapKit search.
+// end ReverseGeocoderService header
 @MainActor
 final class ReverseGeocoderService {
     static let shared = ReverseGeocoderService() // singleton
     private let geocoder = CLGeocoder()
     private var currentSearch: MKLocalSearch? = nil
+
     private init() {} // end init
 
-    /// Returns a human-friendly major place name closest to `coordinate`.
-    /// end func nearestPlaceName(near:)
+    // nearestPlaceName returns the closest human-friendly location label for a coordinate.
+    // end nearestPlaceName
     func nearestPlaceName(near coordinate: CLLocationCoordinate2D) async throws -> String {
         currentSearch?.cancel(); currentSearch = nil
 
@@ -61,3 +62,24 @@ final class ReverseGeocoderService {
     } // end func nearestPlaceName(near:)
 } // end final class ReverseGeocoderService
 
+        guard let item = response.mapItems.first else { return "Unknown location" }
+
+        let placemark = item.placemark
+        let placeParts: [String] = [placemark.locality, placemark.administrativeArea, placemark.country]
+            .compactMap { value -> String? in
+                guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+                    return nil
+                }
+                return trimmed
+            }
+
+        let joinedParts = placeParts.joined(separator: ", ")
+        if let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            if joinedParts.isEmpty { return name }
+            return "\(name), \(joinedParts)"
+        }
+
+        if !joinedParts.isEmpty { return joinedParts }
+        return "Unknown location"
+    } // end nearestPlaceName
+} // end ReverseGeocoderService
