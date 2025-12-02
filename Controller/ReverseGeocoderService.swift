@@ -38,8 +38,25 @@ final class ReverseGeocoderService {
         let search = MKLocalSearch(request: req)
         currentSearch = search
         let resp = try await search.start()
-        currentSearch = nil
-        if let name = resp.mapItems.first?.name, !name.isEmpty { return name }
+        defer { currentSearch = nil }
+
+        if let item = resp.mapItems.first {
+            let placemark = item.placemark
+            let parts = [placemark.locality, placemark.administrativeArea, placemark.country]
+                .compactMap { value -> String? in
+                    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !trimmed.isEmpty else { return nil }
+                    return trimmed
+                }
+            if let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                if parts.isEmpty { return name }
+                let regionLabel = parts.joined(separator: ", ")
+                return [name, regionLabel].joined(separator: ", ")
+            }
+            let joined = parts.joined(separator: ", ")
+            if !joined.isEmpty { return joined }
+        }
+
         return "Unknown location"
     } // end func nearestPlaceName(near:)
 } // end final class ReverseGeocoderService
