@@ -19,21 +19,6 @@ struct TripCardsView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Top bar with "+" that adds a blank card *in place*.
-            HStack {
-                Spacer()
-                Button {
-                    addBlankTripAndSelect()
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
-                        .imageScale(.large)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Add Trip Card")
-            }
-            .padding(.horizontal)
-
             GeometryReader { geo in
                 ZStack {
                     if !trips.isEmpty {
@@ -163,13 +148,6 @@ struct TripCardsView: View {
         guard newIndex >= 0 && newIndex < trips.count else { return }
         selectedIndex = newIndex
     } // end func move
-
-    /// Adds a new blank trip and selects it.
-    private func addBlankTripAndSelect() {
-        let newTrip = Trip.blank()
-        trips.append(newTrip)
-        selectedIndex = max(0, trips.count - 1)
-    } // end func addBlankTripAndSelect
 
     /// Deletes a trip at the given index.
     private func deleteTrip(at index: Int) {
