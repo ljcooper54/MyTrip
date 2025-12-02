@@ -4,6 +4,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import Foundation
 
 /// Crosshair-centered picker: move the map; the **center** is your selection.
 /// We track the center via `.onMapCameraChange` and use MapKit search for labels.
@@ -100,7 +101,7 @@ struct MapPickerSheet: View {
 
     /// Sets the starting camera region using either `initial` or `lastUsedCoordinate`.
     private func configureInitialCamera() {
-        if let start = initial ?? MapPickerSheet.lastUsedCoordinate {
+        if let start = initial ?? MapPickerSheet.lastUsedCoordinate ?? GeocoderService.shared.lastResolvedCoordinate {
             let span = MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
             camera = .region(MKCoordinateRegion(center: start, span: span))
             centerCoord = start
