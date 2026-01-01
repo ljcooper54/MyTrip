@@ -13,6 +13,8 @@ struct TripCardsView: View {
 
     /// The index of the currently visible card.
     @State private var selectedIndex: Int = 0
+    @State private var selectedTripID: UUID? = nil
+    @State private var hasSetInitialSelection = false
 
     /// Last date the user interacted with; used as the default for new cards.
     @State private var lastUsedDate: Date = Date()
@@ -108,6 +110,11 @@ struct TripCardsView: View {
             if let latest = trips.last?.date ?? trips.map(\.date).max() {
                 lastUsedDate = latest
             }
+            setInitialSelectionIfNeeded(trips)
+        }
+        .onChange(of: selectedIndex) { _, newValue in
+            guard trips.indices.contains(newValue) else { return }
+            selectedTripID = trips[newValue].id
         }
         .onChange(of: trips) { oldValue, newValue in
             // Track the most recently edited/added date so new cards inherit it.
@@ -117,6 +124,34 @@ struct TripCardsView: View {
                 lastUsedDate = changed.element.date
             } else if let latest = newValue.last?.date ?? newValue.map(\.date).max() {
                 lastUsedDate = latest
+            }
+
+            guard !newValue.isEmpty else {
+                selectedIndex = 0
+                selectedTripID = nil
+                hasSetInitialSelection = false
+                return
+            }
+
+            if let added = newlyAddedTrip(old: oldValue, new: newValue),
+               let idx = newValue.firstIndex(where: { $0.id == added.id }) {
+                selectedIndex = idx
+                selectedTripID = added.id
+                hasSetInitialSelection = true
+                return
+            }
+
+            if let currentID = selectedTripID,
+               let idx = newValue.firstIndex(where: { $0.id == currentID }) {
+                selectedIndex = idx
+                return
+            }
+
+            if !hasSetInitialSelection {
+                setInitialSelectionIfNeeded(newValue)
+            } else if selectedIndex >= newValue.count {
+                selectedIndex = max(0, newValue.count - 1)
+                selectedTripID = newValue[selectedIndex].id
             }
         }
         .alert("Delete this trip?", isPresented: Binding(
@@ -198,5 +233,37 @@ struct TripCardsView: View {
             print("[ReverseGeocoder] Failed to name coordinate: \(error)")
         }
     } // end func fillPlaceNameIfNeeded
-} // end struct TripCardsView
 
+    // MARK: - Selection helpers
+
+    private func setInitialSelectionIfNeeded(_ trips: [Trip]) {
+        guard !trips.isEmpty, !hasSetInitialSelection else { return }
+        let idx = preferredStartIndex(for: trips, referenceDate: Date())
+        selectedIndex = idx
+        selectedTripID = trips[idx].id
+        hasSetInitialSelection = true
+    } // end func setInitialSelectionIfNeeded
+
+    private func preferredStartIndex(for trips: [Trip], referenceDate: Date) -> Int {
+        let calendar = Calendar.current
+        if let sameDayIndex = trips.firstIndex(where: { calendar.isDate($0.date, inSameDayAs: referenceDate) }) {
+            return sameDayIndex
+        }
+        var bestIndex = 0
+        var bestDistance = abs(trips[0].date.timeIntervalSince(referenceDate))
+        for (idx, trip) in trips.enumerated() {
+            let distance = abs(trip.date.timeIntervalSince(referenceDate))
+            if distance < bestDistance {
+                bestDistance = distance
+                bestIndex = idx
+            }
+        }
+        return bestIndex
+    } // end func preferredStartIndex
+
+    private func newlyAddedTrip(old: [Trip], new: [Trip]) -> Trip? {
+        guard new.count > old.count else { return nil }
+        let oldIDs = Set(old.map(\.id))
+        return new.first(where: { !oldIDs.contains($0.id) })
+    } // end func newlyAddedTrip
+} // end struct TripCardsView

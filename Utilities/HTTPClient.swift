@@ -14,7 +14,9 @@ struct HTTPClient {
     /// GET and return (data, httpResponse) or throw AppError.httpStatus
     static func get(_ url: URL, tag: String) async throws -> (Data, HTTPURLResponse) {
         dlog(tag, "GET → \(url.absoluteString)")
-        let (data, resp) = try await URLSession.shared.data(from: url)
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.httpMethod = "GET"
+        let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else {
             throw AppError.httpStatus(-1, "<no http>") // HTTPClient.get
         }

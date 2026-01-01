@@ -32,6 +32,8 @@ struct MapPickerSheet: View {
     @State private var centerCoord: CLLocationCoordinate2D? = nil
     @State private var pendingName: String = "Unknown location"
     @State private var isLookingUpName: Bool = false
+    @State private var lookupTask: Task<Void, Never>? = nil
+    @State private var lastLookupCoord: CLLocationCoordinate2D? = nil
 
     // MARK: - Body
 
@@ -93,7 +95,7 @@ struct MapPickerSheet: View {
             .onMapCameraChange { ctx in
                 let center = ctx.region.center
                 centerCoord = center
-                Task { await updatePreviewName(for: center) }
+                scheduleLookup(for: center)
             }
     } // end var mapView
 
@@ -105,7 +107,7 @@ struct MapPickerSheet: View {
             let span = MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
             camera = .region(MKCoordinateRegion(center: start, span: span))
             centerCoord = start
-            Task { await updatePreviewName(for: start) }
+            scheduleLookup(for: start)
         } else {
             // Leave camera as .automatic; center/name will be updated as soon as Map reports back.
         }
@@ -134,6 +136,21 @@ struct MapPickerSheet: View {
             print("[ReverseGeocoder] lookup failed: \(error)")
         }
     } // end func updatePreviewName
+
+    private func scheduleLookup(for coord: CLLocationCoordinate2D) {
+        if let last = lastLookupCoord,
+           abs(last.latitude - coord.latitude) < 0.0005,
+           abs(last.longitude - coord.longitude) < 0.0005 {
+            return
+        }
+        lastLookupCoord = coord
+        lookupTask?.cancel()
+        lookupTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await updatePreviewName(for: coord)
+        }
+    } // end func scheduleLookup
 } // end struct MapPickerSheet
 
 /// Simple crosshair drawing.
@@ -154,4 +171,3 @@ private struct CrosshairView: View {
         .accessibilityHidden(true)
     } // end var body
 } // end struct CrosshairView
-

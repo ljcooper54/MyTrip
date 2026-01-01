@@ -14,11 +14,11 @@ struct ContentView: View {
 
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
-    @StateObject private var appState = AppState()
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var store: TripStore
 
     // MARK: - State
 
-    @State private var trips: [Trip] = []
     @State private var editingTripIDs: Set<UUID> = []          // Tracks which cards are in edit mode
 
     // MARK: - Body
@@ -27,9 +27,10 @@ struct ContentView: View {
         NavigationStack {
             Group {
                 if shouldShowTable {
-                    TripTableView(trips: trips).environmentObject(appState)
+                    TripTableView(trips: store.trips)
+                        .environmentObject(appState)
                 } else {
-                    TripCardsView(trips: $trips)
+                    TripCardsView(trips: tripsBinding)
                         .environmentObject(appState)
                         // Inject per-card edit state handlers
                         .environment(\.tripEditControls, TripEditControls(
@@ -37,7 +38,7 @@ struct ContentView: View {
                             setEditing: { id, on in
                                 if on { editingTripIDs.insert(id) } else { editingTripIDs.remove(id) }
                             },
-                            removeTrip: { id in trips.removeAll { $0.id == id } },
+                            removeTrip: { id in store.trips.removeAll { $0.id == id } },
                             commitTrip: { _ in /* no-op: already bound to trips */ }
                         ))
                 }
@@ -58,28 +59,37 @@ struct ContentView: View {
                 // Inline "Add Card": create draft trip and start editing on its card
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        let draft = Trip(
-                            locationName: "",
-                            date: Date(),
-                            customName: nil,
-                            isNameUserEdited: false,
-                            city: nil,
-                            latitude: nil,
-                            longitude: nil,
-                            images: []
-                        )
-                        trips.append(draft)
-                        trips.sort { $0.date < $1.date }
+                        let draft = Trip.blank(at: Date())
+                        store.trips.append(draft)
+                        sortTripsIfNeeded()
                         editingTripIDs.insert(draft.id)
                     } label: { Image(systemName: "plus") }
                 } // end ToolbarItem
             } // end .toolbar
         } // end NavigationStack
+        .onAppear { sortTripsIfNeeded() }
+        .onChange(of: store.trips) { _, _ in
+            sortTripsIfNeeded()
+        }
     } // end var body
 
     private var shouldShowTable: Bool {
         hSize == .regular || vSize == .compact
     } // end var shouldShowTable
+
+    private var tripsBinding: Binding<[Trip]> {
+        Binding(
+            get: { store.trips },
+            set: { store.trips = $0 }
+        )
+    } // end var tripsBinding
+
+    private func sortTripsIfNeeded() {
+        let sorted = store.trips.sorted { $0.date < $1.date }
+        if sorted != store.trips {
+            store.trips = sorted
+        }
+    } // end func sortTripsIfNeeded
 } // end struct ContentView
 
 // MARK: - Editing Controls Environment
@@ -108,4 +118,3 @@ extension EnvironmentValues {
         set { self[TripEditControlsKey.self] = newValue }
     }
 } // end extension EnvironmentValues
-

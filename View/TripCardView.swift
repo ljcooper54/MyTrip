@@ -52,6 +52,7 @@ struct TripCardView: View {
     @State private var todaysWeather: DailyWeather?
     @State private var isLoadingWeather = false
     @State private var weatherFetchTask: Task<Void, Never>? = nil
+    @State private var weatherMessage: String? = nil
 
     /// Used so that tapping Suggest / buttons can end editing cleanly.
     @FocusState private var placeFieldFocused: Bool
@@ -368,12 +369,11 @@ struct TripCardView: View {
             let unit: TemperatureUnit = .f  // Change to .c if you prefer Celsius.
             let forecast = try await svc.forecastForTripDate(for: tempTrip, unit: unit)
             todaysWeather = forecast
-            weatherMessage = forecast == nil ? "No Weather Forecast for Date" : nil
+            weatherMessage = forecast == nil ? "No Weather" : nil
         } catch {
             todaysWeather = nil
-            weatherMessage = "No Weather Forecast for Date"
+            weatherMessage = "Weather unavailable"
             print("[Weather] Failed to load forecast: \(error)")
         }
     } // end func loadWeatherIfPossible
 } // end struct TripCardView
-

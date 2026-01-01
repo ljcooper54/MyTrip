@@ -60,25 +60,4 @@ final class ReverseGeocoderService {
 
         return "Unknown location"
     } // end nearestPlaceName
-
-        guard let item = response.mapItems.first else { return "Unknown location" }
-
-        let placemark = item.placemark
-        let placeParts: [String] = [placemark.locality, placemark.administrativeArea, placemark.country]
-            .compactMap { value -> String? in
-                guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-                    return nil
-                }
-                return trimmed
-            }
-
-        let joinedParts = placeParts.joined(separator: ", ")
-        if let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-            if joinedParts.isEmpty { return name }
-            return "\(name), \(joinedParts)"
-        }
-
-        if !joinedParts.isEmpty { return joinedParts }
-        return "Unknown location"
-    } // end nearestPlaceName
 } // end ReverseGeocoderService
