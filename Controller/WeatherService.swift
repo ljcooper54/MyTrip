@@ -77,10 +77,8 @@ struct OpenWeatherAPI {
             .init(name: "units", value: unitsParam),
             .init(name: "appid", value: key),
         ]
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            throw NSError(domain: "OpenWeatherAPI", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bad response"])
-        }
+        dlog("WEATHER", "OpenWeatherAPI fetchDaily lat=\(lat) lon=\(lon) unit=\(unit.rawValue)")
+        let (data, _) = try await HTTPClient.get(comps.url!, tag: "WEATHER")
         struct OW: Decodable {
             struct Daily: Decodable {
                 struct Temp: Decodable { let min: Double; let max: Double } // end struct Temp
@@ -130,4 +128,3 @@ struct WeatherService {
         return days.first(where: { Calendar.current.isDate($0.date, inSameDayAs: start) })
     } // end func forecastForTripDate
 } // end struct WeatherService
-

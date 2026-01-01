@@ -57,6 +57,8 @@ struct OpenAIPhotoLinkService {
         let key = try apiKey()
         let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
 
+        dlog("OPENAI", "chat.completions request for \"\(locationName)\"")
+
         var req = URLRequest(url: endpoint, timeoutInterval: 20)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -144,9 +146,14 @@ struct OpenAIPhotoLinkService {
     /// Extracts the first URL that looks like a direct image URL.
     private func extractFirstImageURL(in text: String) -> String? {
         // Match URLs ending with .jpg, .jpeg, .png, or .webp
-        let pattern = #"https?://\S+\.(?:jpg|jpeg|png|webp)"#
+        let pattern = #"https?://\S+\.(?:jpg|jpeg|png|webp)(?:\?\S+)?"#
         if let range = text.range(of: pattern, options: .regularExpression) {
-            return String(text[range])
+            var match = String(text[range])
+            while let last = match.last,
+                  ".)]\"'".contains(last) {
+                match.removeLast()
+            }
+            return match
         }
         return nil
     } // end func extractFirstImageURL
@@ -194,4 +201,3 @@ struct OpenAIPhotoLinkService {
         }
     } // end func saveImageFromRemote
 } // end struct OpenAIPhotoLinkService
-

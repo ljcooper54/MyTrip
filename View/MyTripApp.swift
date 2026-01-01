@@ -19,11 +19,10 @@ struct MyTripApp: App {
 
     var body: some Scene {
         WindowGroup {
-            PlannerView()
+            ContentView()
                 .environmentObject(store)
                 .environmentObject(appState)
                 .environmentObject(extensionRegistry)
         }
     } // body
 } // MyTripApp
-
